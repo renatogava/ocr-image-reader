@@ -1,0 +1,39 @@
+version: "3.8"
+
+# Deploy VPS AMS:
+#   docker stack deploy -c docker-compose.ocr2.yml ocr
+
+services:
+  ocr:
+    image: ocr-image-reader:latest
+    environment:
+      - OCR_API_KEY=${OCR_API_KEY:?defina OCR_API_KEY}
+      - OCR_LANGUAGE=${OCR_LANGUAGE:-por}
+      - MAX_IMAGE_BYTES=${MAX_IMAGE_BYTES:-10485760}
+      - DOWNLOAD_TIMEOUT_SECONDS=${DOWNLOAD_TIMEOUT_SECONDS:-30}
+    networks:
+      - IntegraPedidosNet
+    deploy:
+      replicas: 1
+      labels:
+        - traefik.enable=true
+        - traefik.docker.network=IntegraPedidosNet
+        - traefik.http.routers.ocr.rule=Host(`ocr2.integrapedidos.com.br`)
+        - traefik.http.routers.ocr.entrypoints=websecure
+        - traefik.http.routers.ocr.priority=1
+        - traefik.http.routers.ocr.tls=true
+        - traefik.http.routers.ocr.tls.certresolver=letsencryptresolver
+        - traefik.http.routers.ocr.service=ocr@swarm
+        - traefik.http.services.ocr.loadbalancer.server.port=8080
+        - traefik.http.services.ocr.loadbalancer.passHostHeader=true
+        - traefik.http.services.ocr@swarm.loadbalancer.server.port=8080
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/health')"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+
+networks:
+  IntegraPedidosNet:
+    external: true
