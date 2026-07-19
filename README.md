@@ -1,6 +1,6 @@
 # OCR Image Reader
 
-API de OCR para receitas médicas usando [Tesseract](https://tesseractocr.org/).
+API de OCR para receitas médicas usando [Tesseract](https://tesseractocr.org/) com pré-processamento (binarização, deskew, denoise) e fallback opcional para **OpenAI Vision** (manuscritos / baixa confiança).
 
 ## Requisitos (local)
 
@@ -8,6 +8,7 @@ API de OCR para receitas médicas usando [Tesseract](https://tesseractocr.org/).
 - Binário [Tesseract OCR](https://tesseractocr.org/) com idioma `por`
   - Windows: instalador UB Mannheim + PATH ou `TESSERACT_CMD`
   - Linux: `sudo apt install tesseract-ocr tesseract-ocr-por`
+- (Opcional) `OPENAI_API_KEY` para fallback Vision / motor `openai`
 
 ## Configuração
 
@@ -23,6 +24,16 @@ cp .env.example .env
 | `OCR_LANGUAGE` | Idioma do modelo | `por` |
 | `MAX_IMAGE_BYTES` | Limite do arquivo | `10485760` (10MB) |
 | `DOWNLOAD_TIMEOUT_SECONDS` | Timeout ao baixar `imageUrl` | `30` |
+| `OCR_ENGINE` | `auto` \| `tesseract` \| `openai` | `auto` |
+| `OCR_CONFIDENCE_THRESHOLD` | Confiança mínima Tesseract (0–100) para aceitar sem Vision | `60` |
+| `OPENAI_API_KEY` | Chave OpenAI (Vision) | (vazio) |
+| `OPENAI_BASE_URL` | Base URL da API | `https://api.openai.com/v1` |
+| `OPENAI_VISION_MODEL` | Modelo de visão | `gpt-4o-mini` |
+| `OPENAI_MAX_TOKENS` | Máx. tokens da resposta | `2000` |
+| `OPENAI_TIMEOUT_SECONDS` | Timeout da chamada Vision/estrutura | `60` |
+| `OCR_STRUCTURE_ENABLED` | Estrutura receita via OpenAI após OCR | `true` |
+| `OPENAI_STRUCTURE_MODEL` | Modelo para estruturação | `gpt-4o-mini` |
+| `OPENAI_STRUCTURE_MAX_TOKENS` | Máx. tokens da estruturação | `1500` |
 
 ## Executar local
 
@@ -145,15 +156,25 @@ docker service update --image ocr-image-reader:latest ocr_ocr
 
 ### `GET /health`
 
-Sem autenticação. Retorna status e versão do Tesseract.
+Sem autenticação. Retorna status do Tesseract e se a Vision está configurada.
 
 ```json
-{ "status": "ok", "tesseract": "5.5.0" }
+{ "status": "ok", "tesseract": "5.5.0", "openai_configured": true }
 ```
 
 ### `POST /ocr`
 
 Exige header `X-Api-Key`.
+
+Query opcional: `?engine=auto|tesseract|openai` (sobrescreve `OCR_ENGINE`).
+
+#### Fluxo dos motores
+
+| Engine | Comportamento |
+|--------|----------------|
+| `tesseract` | Só Tesseract (com preprocess OpenCV) |
+| `openai` | Só OpenAI Vision (imagem original) |
+| `auto` | Tesseract; se confiança &lt; limiar, texto vazio ou sem conf → Vision (se `OPENAI_API_KEY` existir) |
 
 #### Opção A — upload multipart
 
@@ -163,6 +184,7 @@ X-Api-Key: sua-chave
 Content-Type: multipart/form-data
 
 file: <imagem PNG/JPEG/WebP/TIFF>
+engine: auto   # opcional
 ```
 
 #### Opção B — URL pública
@@ -172,7 +194,7 @@ POST /ocr
 X-Api-Key: sua-chave
 Content-Type: application/json
 
-{ "imageUrl": "https://cdn.exemplo.com/receita.jpg" }
+{ "imageUrl": "https://cdn.exemplo.com/receita.jpg", "engine": "auto" }
 ```
 
 #### Resposta de sucesso
@@ -182,9 +204,29 @@ Content-Type: application/json
   "success": true,
   "text": "Dipirona 500mg\n1 comprimido a cada 6 horas...",
   "language": "por",
-  "confidence": 87.5
+  "confidence": 87.5,
+  "engine": "tesseract",
+  "structuredBy": "openai",
+  "structured": {
+    "date": "19/07/2026",
+    "header": "Dr. Fulano de Tal\nCRM 12345\nClínica Exemplo",
+    "patient": "Maria Silva",
+    "inscription": "Dipirona 500mg comprimido",
+    "posology": "1 comprimido a cada 6 horas",
+    "items": [
+      {
+        "drugName": "Dipirona",
+        "pharmaceuticalForm": "comprimido",
+        "concentration": "500mg",
+        "posology": "1 comprimido a cada 6 horas"
+      }
+    ]
+  }
 }
 ```
+
+`confidence` pode ser `null` quando `engine` for `openai`.  
+`structured` / `structuredBy` vêm preenchidos quando há `OPENAI_API_KEY` e estruturação habilitada (`OCR_STRUCTURE_ENABLED=true`, default). Use `?structure=false` para desligar na requisição.
 
 #### Erros
 
@@ -193,13 +235,16 @@ Content-Type: application/json
 | `401` | API key inválida ou ausente |
 | `400` | Sem imagem / Content-Type inválido / formato inválido |
 | `422` | OCR sem texto / imagem ilegível |
-| `502` | Falha ao baixar `imageUrl` |
+| `502` | Falha ao baixar `imageUrl` ou chamar Vision/estruturação |
+| `503` | `engine=openai` / `structure=true` sem `OPENAI_API_KEY` |
 
 ## Limitações
 
-- MVP devolve **texto bruto** (sem parsing de medicamento/dose).
-- Receitas **impressas** tendem a ter boa acurácia; **manuscritas** têm acurácia menor.
-- Melhor resultado com imagens nítidas, alto contraste e ~300 DPI.
+- O campo `text` continua sendo o OCR bruto; `structured` é a organização via LLM.
+- Receitas **impressas**: Tesseract + preprocess costuma bastar.
+- Receitas **manuscritas**: use `OCR_ENGINE=auto` (ou `openai`) com `OPENAI_API_KEY`.
+- Melhor resultado com imagens nítidas; preprocess ajuda em scans tortos/ruidosos.
+- Não logamos conteúdo de receita/imagem; trate `OPENAI_API_KEY` e dados sensíveis com cuidado (LGPD).
 
 ## Testes
 

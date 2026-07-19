@@ -3,13 +3,15 @@ from __future__ import annotations
 import io
 import re
 from dataclasses import dataclass
+from typing import Literal
 
 import httpx
 import pytesseract
-from PIL import Image, ImageEnhance, ImageOps, UnidentifiedImageError
+from PIL import Image, UnidentifiedImageError
 from pytesseract import Output
 
 from app.config import Settings, get_settings
+from app.preprocess import preprocess_image
 
 ALLOWED_CONTENT_TYPES = {
     "image/png",
@@ -21,7 +23,7 @@ ALLOWED_CONTENT_TYPES = {
     "image/bmp",
 }
 
-MIN_UPSCALE_SIDE = 1000
+OcrEngine = Literal["auto", "tesseract", "openai"]
 
 
 class OcrError(Exception):
@@ -36,6 +38,7 @@ class OcrResult:
     text: str
     language: str
     confidence: float | None
+    engine: str = "tesseract"
 
 
 def configure_tesseract(settings: Settings | None = None) -> None:
@@ -73,20 +76,6 @@ def _open_image(data: bytes) -> Image.Image:
         raise OcrError("Não foi possível abrir a imagem", status_code=400) from exc
 
 
-def preprocess_image(image: Image.Image) -> Image.Image:
-    gray = ImageOps.grayscale(image)
-    width, height = gray.size
-    longest = max(width, height)
-    if longest < MIN_UPSCALE_SIDE and longest > 0:
-        scale = MIN_UPSCALE_SIDE / longest
-        gray = gray.resize(
-            (max(1, int(width * scale)), max(1, int(height * scale))),
-            Image.Resampling.LANCZOS,
-        )
-    enhanced = ImageEnhance.Contrast(gray).enhance(1.5)
-    return enhanced
-
-
 def _clean_text(raw: str) -> str:
     text = raw.replace("\r\n", "\n").replace("\r", "\n")
     text = re.sub(r"[ \t]+\n", "\n", text)
@@ -108,7 +97,21 @@ def _average_confidence(data: dict) -> float | None:
     return round(sum(confidences) / len(confidences), 1)
 
 
-def extract_text_from_bytes(data: bytes, settings: Settings | None = None) -> OcrResult:
+def _should_fallback_to_vision(
+    text: str,
+    confidence: float | None,
+    settings: Settings,
+) -> bool:
+    if not settings.openai_api_key:
+        return False
+    if not text:
+        return True
+    if confidence is None:
+        return True
+    return confidence < settings.ocr_confidence_threshold
+
+
+def extract_text_with_tesseract(data: bytes, settings: Settings | None = None) -> OcrResult:
     cfg = settings or get_settings()
     configure_tesseract(cfg)
     _validate_size(data, cfg)
@@ -133,14 +136,70 @@ def extract_text_from_bytes(data: bytes, settings: Settings | None = None) -> Oc
         raise OcrError(f"Falha no OCR: {exc}", status_code=422) from exc
 
     text = _clean_text(raw_text)
-    if not text:
-        raise OcrError("Não foi possível extrair texto da imagem", status_code=422)
-
     return OcrResult(
         text=text,
         language=cfg.ocr_language,
         confidence=_average_confidence(data_dict),
+        engine="tesseract",
     )
+
+
+def extract_text_from_bytes(data: bytes, settings: Settings | None = None) -> OcrResult:
+    """Compat: apenas Tesseract (síncrono). Preferir extract_text_async."""
+    result = extract_text_with_tesseract(data, settings)
+    if not result.text:
+        raise OcrError("Não foi possível extrair texto da imagem", status_code=422)
+    return result
+
+
+async def extract_text_async(
+    data: bytes,
+    settings: Settings | None = None,
+    engine: OcrEngine | None = None,
+) -> OcrResult:
+    cfg = settings or get_settings()
+    _validate_size(data, cfg)
+    chosen: OcrEngine = engine or cfg.ocr_engine  # type: ignore[assignment]
+
+    if chosen == "openai":
+        from app.vision_service import extract_text_with_vision
+
+        return await extract_text_with_vision(data, cfg)
+
+    tesseract_error: OcrError | None = None
+    result: OcrResult | None = None
+    try:
+        result = extract_text_with_tesseract(data, cfg)
+    except OcrError as exc:
+        tesseract_error = exc
+        if chosen == "tesseract":
+            raise
+
+    if chosen == "tesseract":
+        assert result is not None
+        if not result.text:
+            raise OcrError("Não foi possível extrair texto da imagem", status_code=422)
+        return result
+
+    # auto
+    if result and not _should_fallback_to_vision(result.text, result.confidence, cfg):
+        return result
+
+    if not cfg.openai_api_key:
+        if result and result.text:
+            return result
+        if tesseract_error:
+            raise tesseract_error
+        raise OcrError("Não foi possível extrair texto da imagem", status_code=422)
+
+    from app.vision_service import extract_text_with_vision
+
+    try:
+        return await extract_text_with_vision(data, cfg)
+    except OcrError:
+        if result and result.text:
+            return result
+        raise
 
 
 async def download_image(url: str, settings: Settings | None = None) -> bytes:
@@ -157,7 +216,6 @@ async def download_image(url: str, settings: Settings | None = None) -> bytes:
 
     content_type = (response.headers.get("content-type") or "").split(";")[0].strip().lower()
     if content_type and content_type not in ALLOWED_CONTENT_TYPES:
-        # Alguns CDNs omitem ou usam application/octet-stream; validamos pelo conteúdo depois
         if content_type not in {"application/octet-stream", "binary/octet-stream"}:
             raise OcrError(
                 f"Content-Type não suportado: {content_type}",
