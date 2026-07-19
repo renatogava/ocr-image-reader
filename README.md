@@ -14,7 +14,7 @@ API de OCR para receitas médicas usando [Tesseract](https://tesseractocr.org/) 
 
 ```bash
 cp .env.example .env
-# edite OCR_API_KEY
+# edite OCR_API_KEY e, se for usar Vision/estruturação, OPENAI_API_KEY
 ```
 
 | Variável | Descrição | Default |
@@ -54,7 +54,10 @@ Docs interativas: http://localhost:8080/docs
 
 ```bash
 docker build -t ocr-image-reader:latest .
-docker run --rm -p 8080:8080 -e OCR_API_KEY=sua-chave ocr-image-reader:latest
+docker run --rm -p 8080:8080 \
+  -e OCR_API_KEY=sua-chave \
+  -e OPENAI_API_KEY=sk-... \
+  ocr-image-reader:latest
 ```
 
 ## Deploy nas VPS (Traefik + Docker Swarm)
@@ -76,6 +79,10 @@ Infra das VPS IntegraPedidos (SP e AMS):
 
 DNS: `ocr` → IP da VPS SP, `ocr2` → IP da VPS AMS. No Cloudflare, use SSL **Full (strict)** se o proxy estiver laranja.
 
+**Envs no Swarm:** o compose usa `${VAR}` resolvido no momento do `stack deploy`. Faça `export` no shell da VPS (ou `set -a; source .env; set +a`). Um arquivo `.env` no disco **não** é injetado sozinho no serviço.
+
+Na SP use só `docker-compose.ocr.yml`; na AMS, só `docker-compose.ocr2.yml`. Os dois arquivos existem no clone em qualquer VPS — isso é normal.
+
 ### 1. Build da imagem (em cada VPS)
 
 ```bash
@@ -86,14 +93,25 @@ cd ocr-image-reader
 docker build -t ocr-image-reader:latest .
 ```
 
-### 2. Definir a API key e subir o stack
+Se o `git pull` falhar por compose local untracked (ex.: `docker-compose.ocr.yml` já existia fora do git), mova o backup e puxe de novo:
 
-A mesma `OCR_API_KEY` pode ser usada nas duas VPS.
+```bash
+mv docker-compose.ocr.yml docker-compose.ocr.yml.bak   # se necessário
+git pull
+# depois: rm docker-compose.ocr.yml.bak
+```
+
+### 2. Definir envs e subir o stack
+
+A mesma `OCR_API_KEY` / `OPENAI_API_KEY` pode ser usada nas duas VPS.
 
 **SP:**
 
 ```bash
 export OCR_API_KEY='sua-chave-forte'
+export OPENAI_API_KEY='sk-...'                 # Vision + estruturação
+export OCR_ENGINE=auto                         # opcional (default no compose)
+export OCR_STRUCTURE_ENABLED=true              # opcional (default true)
 docker stack deploy -c docker-compose.ocr.yml ocr
 ```
 
@@ -101,8 +119,13 @@ docker stack deploy -c docker-compose.ocr.yml ocr
 
 ```bash
 export OCR_API_KEY='sua-chave-forte'
+export OPENAI_API_KEY='sk-...'
+export OCR_ENGINE=auto
+export OCR_STRUCTURE_ENABLED=true
 docker stack deploy -c docker-compose.ocr2.yml ocr
 ```
+
+Sem `OPENAI_API_KEY`, o serviço sobe, mas `openai_configured` fica `false` (sem Vision/estruturação).
 
 ### 3. Conferir o serviço
 
@@ -111,6 +134,8 @@ docker service ls | grep ocr
 docker service ps ocr_ocr
 docker service logs ocr_ocr --tail 50
 ```
+
+Aviso `image could not be accessed on a registry` com imagem só local é esperado; use `--force` no update se a task não recarregar a imagem nova.
 
 ### 4. Smoke test
 
@@ -132,18 +157,34 @@ curl -X POST https://ocr2.integrapedidos.com.br/ocr \
   -d '{"imageUrl":"https://URL_PUBLICA_RECEITA.jpg"}'
 ```
 
-Resposta esperada do health: `{"status":"ok","tesseract":"5.5.0"}` (versão pode variar).
+Resposta esperada do health (versão do Tesseract pode variar):
+
+```json
+{ "status": "ok", "tesseract": "5.5.0", "openai_configured": true }
+```
+
+Se `openai_configured` estiver ausente, a imagem em execução ainda é antiga — faça rebuild e redeploy.
 
 ### 5. Atualizar após `git pull`
 
 ```bash
 cd /root/ocr-image-reader
 git pull
-docker build -t ocr-image-reader:latest .
-docker service update --image ocr-image-reader:latest ocr_ocr
-# se a imagem for apenas local e o serviço não puxar:
-# docker service update --force ocr_ocr
+docker build --no-cache -t ocr-image-reader:latest .
+
+# reexportar envs na mesma sessão (obrigatório se mudou chave / engine)
+export OCR_API_KEY='sua-chave-forte'
+export OPENAI_API_KEY='sk-...'
+
+# SP — reaplicar compose (atualiza envs + imagem)
+docker stack deploy -c docker-compose.ocr.yml ocr
+# AMS: docker stack deploy -c docker-compose.ocr2.yml ocr
+
+# se a task não trocar de imagem:
+docker service update --force ocr_ocr
 ```
+
+Alternativa só de imagem (sem mudar envs): `docker service update --image ocr-image-reader:latest --force ocr_ocr`.
 
 ### Troubleshooting Traefik
 
@@ -151,6 +192,7 @@ docker service update --image ocr-image-reader:latest ocr_ocr
 2. Logs Traefik: `docker service logs traefik_traefik --tail 100`
 3. DNS apontando para o IP correto da VPS
 4. Aguardar 1–2 min para o Let's Encrypt emitir o certificado
+5. Health sem `openai_configured` → rebuild `--no-cache` + `stack deploy` com `OPENAI_API_KEY` exportada
 
 ## Contrato da API
 
