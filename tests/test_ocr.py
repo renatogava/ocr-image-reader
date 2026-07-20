@@ -165,7 +165,7 @@ def test_ocr_auto_falls_back_to_vision_on_low_confidence(
     vision_result = OcrResult(
         text="Dipirona 500mg manuscrito",
         language="por",
-        confidence=None,
+        confidence=82.0,
         engine="openai",
     )
 
@@ -188,6 +188,7 @@ def test_ocr_auto_falls_back_to_vision_on_low_confidence(
     body = response.json()
     assert body["engine"] == "openai"
     assert "manuscrito" in body["text"]
+    assert body["confidence"] == 82.0
 
 
 def test_ocr_openai_engine_uses_vision(
@@ -202,7 +203,7 @@ def test_ocr_openai_engine_uses_vision(
     vision_result = OcrResult(
         text="Receita via Vision",
         language="por",
-        confidence=None,
+        confidence=76.5,
         engine="openai",
     )
 
@@ -220,6 +221,7 @@ def test_ocr_openai_engine_uses_vision(
     body = response.json()
     assert body["engine"] == "openai"
     assert body["text"] == "Receita via Vision"
+    assert body["confidence"] == 76.5
 
 
 def test_ocr_structures_prescription_when_openai_configured(

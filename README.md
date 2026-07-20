@@ -267,7 +267,7 @@ Content-Type: application/json
 }
 ```
 
-`confidence` pode ser `null` quando `engine` for `openai`.  
+`confidence` com `engine=openai` é uma **estimativa** (autoavaliação do modelo + penalidade por trechos `[ilegível]`), não a métrica estatística do Tesseract.  
 `structured` / `structuredBy` vêm preenchidos quando há `OPENAI_API_KEY` e estruturação habilitada (`OCR_STRUCTURE_ENABLED=true`, default). Use `?structure=false` para desligar na requisição.
 
 #### Erros
@@ -285,6 +285,7 @@ Content-Type: application/json
 - O campo `text` continua sendo o OCR bruto; `structured` é a organização via LLM.
 - Receitas **impressas**: Tesseract + preprocess costuma bastar.
 - Receitas **manuscritas**: use `OCR_ENGINE=auto` (ou `openai`) com `OPENAI_API_KEY`.
+- Com Vision, `confidence` é estimativa do modelo (0–100), ajustada se houver `[ilegível]`.
 - Melhor resultado com imagens nítidas; preprocess ajuda em scans tortos/ruidosos.
 - Não logamos conteúdo de receita/imagem; trate `OPENAI_API_KEY` e dados sensíveis com cuidado (LGPD).
 
