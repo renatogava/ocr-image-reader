@@ -83,6 +83,42 @@ DNS: `ocr` → IP da VPS SP, `ocr2` → IP da VPS AMS. No Cloudflare, use SSL **
 
 Na SP use só `docker-compose.ocr.yml`; na AMS, só `docker-compose.ocr2.yml`. Os dois arquivos existem no clone em qualquer VPS — isso é normal.
 
+### Deploy automático (GitHub Actions)
+
+Em todo push na branch `main` (com mudanças em `app/`, `Dockerfile`, `requirements.txt`, composes, scripts ou o próprio workflow), o Actions:
+
+1. Roda `pytest`
+2. Em paralelo, faz deploy nas VPS **SP** e **AMS** via SSH (`git pull` + `docker build` + `stack deploy`)
+
+Workflow: [`.github/workflows/deploy.yml`](.github/workflows/deploy.yml)  
+Script remoto: [`scripts/deploy-vps.sh`](scripts/deploy-vps.sh)
+
+#### Environments e secrets no GitHub
+
+Crie dois **Environments** no repositório (`Settings` → `Environments`):
+
+| Environment | Uso |
+|-------------|-----|
+| `ocr-sp` | VPS São Paulo |
+| `ocr-ams` | VPS Amsterdam |
+
+Em **cada** environment, configure:
+
+| Secret | Descrição |
+|--------|-----------|
+| `SSH_HOST` | IP ou hostname da VPS |
+| `SSH_USERNAME` | Usuário SSH (ex.: `root`) |
+| `SSH_PRIVATE_KEY` | Chave privada SSH (PEM completo) |
+| `SSH_PORT` | Opcional (default `22`) |
+| `OCR_API_KEY` | Chave da API OCR |
+| `OPENAI_API_KEY` | Chave OpenAI (Vision / estruturação) |
+| `OCR_ENGINE` | Opcional (default `auto`) |
+| `OCR_STRUCTURE_ENABLED` | Opcional (default `true`) |
+
+Pré-requisito: clone em `/root/ocr-image-reader` já existente em cada VPS, com acesso `git fetch` ao GitHub.
+
+Se o Actions estiver indisponível, use o deploy manual abaixo.
+
 ### 1. Build da imagem (em cada VPS)
 
 ```bash
@@ -165,14 +201,33 @@ Resposta esperada do health (versão do Tesseract pode variar):
 
 Se `openai_configured` estiver ausente, a imagem em execução ainda é antiga — faça rebuild e redeploy.
 
-### 5. Atualizar após `git pull`
+### 5. Atualizar após `git pull` (manual / emergência)
+
+Com o script (recomendado):
+
+```bash
+cd /root/ocr-image-reader
+git fetch origin main && git reset --hard origin/main
+chmod +x scripts/deploy-vps.sh
+
+export OCR_API_KEY='sua-chave-forte'
+export OPENAI_API_KEY='sk-...'
+export OCR_ENGINE=auto
+export OCR_STRUCTURE_ENABLED=true
+
+# SP:
+./scripts/deploy-vps.sh sp
+# AMS:
+# ./scripts/deploy-vps.sh ams
+```
+
+Ou passo a passo:
 
 ```bash
 cd /root/ocr-image-reader
 git pull
 docker build --no-cache -t ocr-image-reader:latest .
 
-# reexportar envs na mesma sessão (obrigatório se mudou chave / engine)
 export OCR_API_KEY='sua-chave-forte'
 export OPENAI_API_KEY='sk-...'
 
@@ -180,7 +235,6 @@ export OPENAI_API_KEY='sk-...'
 docker stack deploy -c docker-compose.ocr.yml ocr
 # AMS: docker stack deploy -c docker-compose.ocr2.yml ocr
 
-# se a task não trocar de imagem:
 docker service update --force ocr_ocr
 ```
 

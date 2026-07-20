@@ -1,0 +1,97 @@
+name: Deploy OCR to VPS
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - "app/**"
+      - "scripts/**"
+      - "tests/**"
+      - "Dockerfile"
+      - "requirements.txt"
+      - "docker-compose.ocr.yml"
+      - "docker-compose.ocr2.yml"
+      - ".github/workflows/deploy.yml"
+
+concurrency:
+  group: ocr-deploy-main
+  cancel-in-progress: false
+
+jobs:
+  test:
+    name: Test
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run tests
+        run: pytest -q
+
+  deploy-sp:
+    name: Deploy SP
+    needs: test
+    runs-on: ubuntu-latest
+    environment: ocr-sp
+    steps:
+      - name: Deploy to São Paulo VPS via SSH
+        uses: appleboy/ssh-action@v1.0.3
+        env:
+          OCR_API_KEY: ${{ secrets.OCR_API_KEY }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          OCR_ENGINE: ${{ secrets.OCR_ENGINE }}
+          OCR_STRUCTURE_ENABLED: ${{ secrets.OCR_STRUCTURE_ENABLED }}
+        with:
+          host: ${{ secrets.SSH_HOST }}
+          username: ${{ secrets.SSH_USERNAME }}
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          port: ${{ secrets.SSH_PORT || 22 }}
+          command_timeout: 30m
+          envs: OCR_API_KEY,OPENAI_API_KEY,OCR_ENGINE,OCR_STRUCTURE_ENABLED
+          script: |
+            set -euo pipefail
+            echo "=== Deploy OCR SP $(date -u +%Y-%m-%dT%H:%M:%SZ) ==="
+            cd /root/ocr-image-reader
+            git fetch origin main
+            git reset --hard origin/main
+            chmod +x scripts/deploy-vps.sh
+            ./scripts/deploy-vps.sh sp
+
+  deploy-ams:
+    name: Deploy AMS
+    needs: test
+    runs-on: ubuntu-latest
+    environment: ocr-ams
+    steps:
+      - name: Deploy to Amsterdam VPS via SSH
+        uses: appleboy/ssh-action@v1.0.3
+        env:
+          OCR_API_KEY: ${{ secrets.OCR_API_KEY }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          OCR_ENGINE: ${{ secrets.OCR_ENGINE }}
+          OCR_STRUCTURE_ENABLED: ${{ secrets.OCR_STRUCTURE_ENABLED }}
+        with:
+          host: ${{ secrets.SSH_HOST }}
+          username: ${{ secrets.SSH_USERNAME }}
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          port: ${{ secrets.SSH_PORT || 22 }}
+          command_timeout: 30m
+          envs: OCR_API_KEY,OPENAI_API_KEY,OCR_ENGINE,OCR_STRUCTURE_ENABLED
+          script: |
+            set -euo pipefail
+            echo "=== Deploy OCR AMS $(date -u +%Y-%m-%dT%H:%M:%SZ) ==="
+            cd /root/ocr-image-reader
+            git fetch origin main
+            git reset --hard origin/main
+            chmod +x scripts/deploy-vps.sh
+            ./scripts/deploy-vps.sh ams
