@@ -24,7 +24,7 @@ services:
       replicas: 1
       labels:
         - traefik.enable=true
-        - traefik.docker.network=IntegraPedidosNet
+        - traefik.docker.network=integraPedidosNet
         - traefik.http.routers.ocr.rule=Host(`ocr2.integrapedidos.com.br`)
         - traefik.http.routers.ocr.entrypoints=websecure
         - traefik.http.routers.ocr.priority=1
@@ -44,3 +44,4 @@ services:
 networks:
   IntegraPedidosNet:
     external: true
+    name: integraPedidosNet
