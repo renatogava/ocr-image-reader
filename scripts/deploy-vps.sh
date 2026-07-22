@@ -64,11 +64,14 @@ docker service update --force ocr_ocr
 
 echo "=== Aguardando serviço ==="
 sleep 8
-docker service ps ocr_ocr --no-trunc | head -n 5
+# Evita exit 141 (SIGPIPE) com pipefail: não use head/sed em pipe com docker
+docker service ps ocr_ocr --no-trunc > /tmp/ocr-service-ps.txt
+sed -n '1,5p' /tmp/ocr-service-ps.txt
 
 echo "=== Health check ==="
 for i in 1 2 3 4 5 6; do
-  if curl -sf "$HEALTH_URL" | tee /tmp/ocr-health.json; then
+  if curl -sf "$HEALTH_URL" -o /tmp/ocr-health.json; then
+    cat /tmp/ocr-health.json
     echo
     if grep -q '"openai_configured"[[:space:]]*:[[:space:]]*true' /tmp/ocr-health.json; then
       echo "=== Deploy $TARGET concluído com sucesso ==="
