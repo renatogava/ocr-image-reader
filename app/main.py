@@ -18,9 +18,10 @@ app = FastAPI(
         "API de OCR para receitas médicas: Tesseract com pré-processamento "
         "(binarização, deskew, denoise), fallback opcional para OpenAI Vision "
         "(manuscritos / baixa confiança) e estruturação do texto em campos "
-        "(data, cabeçalho, paciente, inscrição, posologia)."
+        "(data, cabeçalho, paciente, inscrição, posologia). "
+        "Chave OpenAI resolvida por tenantId (OPENAI_API_KEYS_BY_TENANT)."
     ),
-    version="1.2.0",
+    version="1.3.0",
 )
 
 
@@ -39,13 +40,27 @@ def _parse_bool_form(value: object) -> bool | None:
     return None
 
 
+def _require_tenant_id(raw: object) -> str:
+    if not isinstance(raw, str) or not raw.strip():
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="tenantId é obrigatório",
+        )
+    return raw.strip()
+
+
+def _settings_for_tenant(settings: Settings, tenant_id: str) -> Settings:
+    resolved = settings.get_openai_api_key_for_tenant(tenant_id)
+    return settings.model_copy(update={"openai_api_key": resolved})
+
+
 @app.get("/health", response_model=HealthResponse)
 def health(settings: Annotated[Settings, Depends(_settings_dep)]) -> HealthResponse:
     version = tesseract_version()
     return HealthResponse(
         status="ok" if version else "degraded",
         tesseract=version,
-        openai_configured=bool(settings.openai_api_key),
+        openai_configured=settings.has_any_openai_key(),
     )
 
 
@@ -68,6 +83,7 @@ async def ocr(
     content_type = (request.headers.get("content-type") or "").lower()
     chosen_engine: OcrEngine | None = engine
     want_structure = structure
+    tenant_id: str
 
     try:
         if "application/json" in content_type:
@@ -75,10 +91,26 @@ async def ocr(
             try:
                 body = OcrUrlRequest.model_validate(payload)
             except ValidationError as exc:
+                # tenantId/imageUrl ausentes → 422 do pydantic; normaliza tenantId vazio
+                errors = exc.errors()
+                for err in errors:
+                    if list(err.get("loc") or [])[-1:] == ["tenantId"] or list(
+                        err.get("loc") or []
+                    )[-1:] == ["tenant_id"]:
+                        raise HTTPException(
+                            status_code=status.HTTP_400_BAD_REQUEST,
+                            detail="tenantId é obrigatório",
+                        ) from exc
                 raise HTTPException(
                     status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-                    detail=exc.errors(),
+                    detail=errors,
                 ) from exc
+            tenant_id = body.tenant_id.strip()
+            if not tenant_id:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="tenantId é obrigatório",
+                )
             data = await download_image(str(body.image_url), settings)
             if body.engine:
                 chosen_engine = body.engine
@@ -86,6 +118,7 @@ async def ocr(
                 want_structure = body.structure
         elif "multipart/form-data" in content_type:
             form = await request.form()
+            tenant_id = _require_tenant_id(form.get("tenantId"))
             upload = form.get("file")
             if upload is None or not hasattr(upload, "read"):
                 raise HTTPException(
@@ -105,19 +138,20 @@ async def ocr(
                 detail="Content-Type deve ser multipart/form-data ou application/json",
             )
 
-        result = await extract_text_async(data, settings, engine=chosen_engine)
+        effective = _settings_for_tenant(settings, tenant_id)
+        result = await extract_text_async(data, effective, engine=chosen_engine)
 
         structured = None
         structured_by = None
         should_structure = (
-            settings.ocr_structure_enabled if want_structure is None else want_structure
+            effective.ocr_structure_enabled if want_structure is None else want_structure
         )
-        if should_structure and settings.openai_api_key:
-            structured = await structure_prescription_text(result.text, settings)
+        if should_structure and effective.openai_api_key:
+            structured = await structure_prescription_text(result.text, effective)
             structured_by = "openai"
-        elif should_structure and want_structure is True and not settings.openai_api_key:
+        elif should_structure and want_structure is True and not effective.openai_api_key:
             raise OcrError(
-                "OPENAI_API_KEY não configurada para estruturação da receita",
+                f"Nenhuma chave OpenAI configurada para o tenantId '{tenant_id}'",
                 status_code=503,
             )
     except HTTPException:

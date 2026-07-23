@@ -48,7 +48,7 @@ jobs:
         uses: appleboy/ssh-action@v1.0.3
         env:
           OCR_API_KEY: ${{ secrets.OCR_API_KEY }}
-          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          OPENAI_API_KEYS_BY_TENANT: ${{ secrets.OPENAI_API_KEYS_BY_TENANT }}
           OCR_ENGINE: ${{ secrets.OCR_ENGINE }}
           OCR_STRUCTURE_ENABLED: ${{ secrets.OCR_STRUCTURE_ENABLED }}
         with:
@@ -57,7 +57,7 @@ jobs:
           key: ${{ secrets.SSH_PRIVATE_KEY }}
           port: ${{ secrets.SSH_PORT || 22 }}
           command_timeout: 30m
-          envs: OCR_API_KEY,OPENAI_API_KEY,OCR_ENGINE,OCR_STRUCTURE_ENABLED
+          envs: OCR_API_KEY,OPENAI_API_KEYS_BY_TENANT,OCR_ENGINE,OCR_STRUCTURE_ENABLED
           script: |
             set -euo pipefail
             echo "=== Deploy OCR SP $(date -u +%Y-%m-%dT%H:%M:%SZ) ==="
@@ -77,7 +77,7 @@ jobs:
         uses: appleboy/ssh-action@v1.0.3
         env:
           OCR_API_KEY: ${{ secrets.OCR_API_KEY }}
-          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          OPENAI_API_KEYS_BY_TENANT: ${{ secrets.OPENAI_API_KEYS_BY_TENANT }}
           OCR_ENGINE: ${{ secrets.OCR_ENGINE }}
           OCR_STRUCTURE_ENABLED: ${{ secrets.OCR_STRUCTURE_ENABLED }}
         with:
@@ -86,7 +86,7 @@ jobs:
           key: ${{ secrets.SSH_PRIVATE_KEY }}
           port: ${{ secrets.SSH_PORT || 22 }}
           command_timeout: 30m
-          envs: OCR_API_KEY,OPENAI_API_KEY,OCR_ENGINE,OCR_STRUCTURE_ENABLED
+          envs: OCR_API_KEY,OPENAI_API_KEYS_BY_TENANT,OCR_ENGINE,OCR_STRUCTURE_ENABLED
           script: |
             set -euo pipefail
             echo "=== Deploy OCR AMS $(date -u +%Y-%m-%dT%H:%M:%SZ) ==="

@@ -3,7 +3,8 @@
 # Uso: ./scripts/deploy-vps.sh sp|ams
 #
 # Requer no ambiente:
-#   OCR_API_KEY, OPENAI_API_KEY (obrigatórios)
+#   OCR_API_KEY (obrigatório)
+#   OPENAI_API_KEYS_BY_TENANT (obrigatório — JSON tenantId -> sk-...)
 # Opcionais: OCR_ENGINE, OCR_STRUCTURE_ENABLED, OCR_REPO_DIR
 
 set -euo pipefail
@@ -23,8 +24,8 @@ if [[ -z "${OCR_API_KEY:-}" ]]; then
   exit 1
 fi
 
-if [[ -z "${OPENAI_API_KEY:-}" ]]; then
-  echo "OPENAI_API_KEY não definida" >&2
+if [[ -z "${OPENAI_API_KEYS_BY_TENANT:-}" ]]; then
+  echo "OPENAI_API_KEYS_BY_TENANT não definida" >&2
   exit 1
 fi
 
@@ -55,7 +56,7 @@ docker build --no-cache -t ocr-image-reader:latest .
 
 echo "=== Stack deploy ($COMPOSE_FILE) ==="
 export OCR_API_KEY
-export OPENAI_API_KEY
+export OPENAI_API_KEYS_BY_TENANT
 export OCR_ENGINE
 export OCR_STRUCTURE_ENABLED
 

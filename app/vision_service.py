@@ -106,7 +106,7 @@ async def extract_text_with_vision(
 ) -> OcrResult:
     if not settings.openai_api_key:
         raise OcrError(
-            "OPENAI_API_KEY não configurada para OCR com Vision",
+            "Nenhuma chave OpenAI configurada para OCR com Vision (tenantId)",
             status_code=503,
         )
 

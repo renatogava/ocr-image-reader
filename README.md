@@ -8,25 +8,25 @@ API de OCR para receitas médicas usando [Tesseract](https://tesseractocr.org/) 
 - Binário [Tesseract OCR](https://tesseractocr.org/) com idioma `por`
   - Windows: instalador UB Mannheim + PATH ou `TESSERACT_CMD`
   - Linux: `sudo apt install tesseract-ocr tesseract-ocr-por`
-- (Opcional) `OPENAI_API_KEY` para fallback Vision / motor `openai`
+- (Multi-tenant) `OPENAI_API_KEYS_BY_TENANT` com mapa JSON `tenantId → sk-...`
 
 ## Configuração
 
 ```bash
 cp .env.example .env
-# edite OCR_API_KEY e, se for usar Vision/estruturação, OPENAI_API_KEY
+# edite OCR_API_KEY e OPENAI_API_KEYS_BY_TENANT
 ```
 
 | Variável | Descrição | Default |
 |----------|-----------|---------|
-| `OCR_API_KEY` | Chave do header `X-Api-Key` | `change-me-to-a-secure-key` |
+| `OCR_API_KEY` | Chave do header `X-Api-Key` (única para todos os tenants) | `change-me-to-a-secure-key` |
 | `TESSERACT_CMD` | Path do binário Tesseract (só Windows/local) | (auto) |
 | `OCR_LANGUAGE` | Idioma do modelo | `por` |
 | `MAX_IMAGE_BYTES` | Limite do arquivo | `10485760` (10MB) |
 | `DOWNLOAD_TIMEOUT_SECONDS` | Timeout ao baixar `imageUrl` | `30` |
 | `OCR_ENGINE` | `auto` \| `tesseract` \| `openai` | `auto` |
 | `OCR_CONFIDENCE_THRESHOLD` | Confiança mínima Tesseract (0–100) para aceitar sem Vision | `60` |
-| `OPENAI_API_KEY` | Chave OpenAI (Vision) | (vazio) |
+| `OPENAI_API_KEYS_BY_TENANT` | JSON `{"tenant-a":"sk-...","tenant-b":"sk-..."}` | (vazio) |
 | `OPENAI_BASE_URL` | Base URL da API | `https://api.openai.com/v1` |
 | `OPENAI_VISION_MODEL` | Modelo de visão | `gpt-4o-mini` |
 | `OPENAI_MAX_TOKENS` | Máx. tokens da resposta | `2000` |
@@ -56,7 +56,7 @@ Docs interativas: http://localhost:8080/docs
 docker build -t ocr-image-reader:latest .
 docker run --rm -p 8080:8080 \
   -e OCR_API_KEY=sua-chave \
-  -e OPENAI_API_KEY=sk-... \
+  -e OPENAI_API_KEYS_BY_TENANT='{"tenant-a":"sk-..."}' \
   ocr-image-reader:latest
 ```
 
@@ -110,8 +110,8 @@ Em **cada** environment, configure:
 | `SSH_USERNAME` | Usuário SSH (ex.: `root`) |
 | `SSH_PRIVATE_KEY` | Chave privada SSH (PEM completo) |
 | `SSH_PORT` | Opcional (default `22`) |
-| `OCR_API_KEY` | Chave da API OCR |
-| `OPENAI_API_KEY` | Chave OpenAI (Vision / estruturação) |
+| `OCR_API_KEY` | Chave da API OCR (única) |
+| `OPENAI_API_KEYS_BY_TENANT` | JSON `{"tenant-a":"sk-..."}` |
 | `OCR_ENGINE` | Opcional (default `auto`) |
 | `OCR_STRUCTURE_ENABLED` | Opcional (default `true`) |
 
@@ -139,13 +139,13 @@ git pull
 
 ### 2. Definir envs e subir o stack
 
-A mesma `OCR_API_KEY` / `OPENAI_API_KEY` pode ser usada nas duas VPS.
+A mesma `OCR_API_KEY` / mapa OpenAI pode ser usada nas duas VPS.
 
 **SP:**
 
 ```bash
 export OCR_API_KEY='sua-chave-forte'
-export OPENAI_API_KEY='sk-...'                 # Vision + estruturação
+export OPENAI_API_KEYS_BY_TENANT='{"tenant-a":"sk-...","tenant-b":"sk-..."}'
 export OCR_ENGINE=auto                         # opcional (default no compose)
 export OCR_STRUCTURE_ENABLED=true              # opcional (default true)
 docker stack deploy -c docker-compose.ocr.yml ocr
@@ -155,13 +155,13 @@ docker stack deploy -c docker-compose.ocr.yml ocr
 
 ```bash
 export OCR_API_KEY='sua-chave-forte'
-export OPENAI_API_KEY='sk-...'
+export OPENAI_API_KEYS_BY_TENANT='{"tenant-a":"sk-...","tenant-b":"sk-..."}'
 export OCR_ENGINE=auto
 export OCR_STRUCTURE_ENABLED=true
 docker stack deploy -c docker-compose.ocr2.yml ocr
 ```
 
-Sem `OPENAI_API_KEY`, o serviço sobe, mas `openai_configured` fica `false` (sem Vision/estruturação).
+Sem `OPENAI_API_KEYS_BY_TENANT`, o serviço sobe, mas `openai_configured` fica `false` (sem Vision/estruturação).
 
 ### 3. Conferir o serviço
 
@@ -184,13 +184,13 @@ curl -s https://ocr2.integrapedidos.com.br/health
 curl -X POST https://ocr.integrapedidos.com.br/ocr \
   -H "X-Api-Key: SUA_CHAVE" \
   -H "Content-Type: application/json" \
-  -d '{"imageUrl":"https://URL_PUBLICA_RECEITA.jpg"}'
+  -d '{"imageUrl":"https://URL_PUBLICA_RECEITA.jpg","tenantId":"tenant-a"}'
 
 # Repetir o POST em ocr2 após o deploy na AMS
 curl -X POST https://ocr2.integrapedidos.com.br/ocr \
   -H "X-Api-Key: SUA_CHAVE" \
   -H "Content-Type: application/json" \
-  -d '{"imageUrl":"https://URL_PUBLICA_RECEITA.jpg"}'
+  -d '{"imageUrl":"https://URL_PUBLICA_RECEITA.jpg","tenantId":"tenant-a"}'
 ```
 
 Resposta esperada do health (versão do Tesseract pode variar):
@@ -211,7 +211,7 @@ git fetch origin main && git reset --hard origin/main
 chmod +x scripts/deploy-vps.sh
 
 export OCR_API_KEY='sua-chave-forte'
-export OPENAI_API_KEY='sk-...'
+export OPENAI_API_KEYS_BY_TENANT='{"tenant-a":"sk-..."}'
 export OCR_ENGINE=auto
 export OCR_STRUCTURE_ENABLED=true
 
@@ -229,7 +229,7 @@ git pull
 docker build --no-cache -t ocr-image-reader:latest .
 
 export OCR_API_KEY='sua-chave-forte'
-export OPENAI_API_KEY='sk-...'
+export OPENAI_API_KEYS_BY_TENANT='{"tenant-a":"sk-..."}'
 
 # SP — reaplicar compose (atualiza envs + imagem)
 docker stack deploy -c docker-compose.ocr.yml ocr
@@ -246,13 +246,13 @@ Alternativa só de imagem (sem mudar envs): `docker service update --image ocr-i
 2. Logs Traefik: `docker service logs traefik_traefik --tail 100`
 3. DNS apontando para o IP correto da VPS
 4. Aguardar 1–2 min para o Let's Encrypt emitir o certificado
-5. Health sem `openai_configured` → rebuild `--no-cache` + `stack deploy` com `OPENAI_API_KEY` exportada
+5. Health sem `openai_configured` → rebuild `--no-cache` + `stack deploy` com `OPENAI_API_KEYS_BY_TENANT` exportada
 
 ## Contrato da API
 
 ### `GET /health`
 
-Sem autenticação. Retorna status do Tesseract e se a Vision está configurada.
+Sem autenticação. Retorna status do Tesseract e se o mapa `OPENAI_API_KEYS_BY_TENANT` tem ao menos uma chave.
 
 ```json
 { "status": "ok", "tesseract": "5.5.0", "openai_configured": true }
@@ -260,7 +260,9 @@ Sem autenticação. Retorna status do Tesseract e se a Vision está configurada.
 
 ### `POST /ocr`
 
-Exige header `X-Api-Key`.
+Exige header `X-Api-Key` e campo **`tenantId`** no body (JSON ou multipart).
+
+A chave OpenAI usada é **somente** a do mapa `OPENAI_API_KEYS_BY_TENANT[tenantId]`.
 
 Query opcional: `?engine=auto|tesseract|openai` (sobrescreve `OCR_ENGINE`).
 
@@ -270,7 +272,7 @@ Query opcional: `?engine=auto|tesseract|openai` (sobrescreve `OCR_ENGINE`).
 |--------|----------------|
 | `tesseract` | Só Tesseract (com preprocess OpenCV) |
 | `openai` | Só OpenAI Vision (imagem original) |
-| `auto` | Tesseract; se confiança &lt; limiar, texto vazio ou sem conf → Vision (se `OPENAI_API_KEY` existir) |
+| `auto` | Tesseract; se confiança &lt; limiar, texto vazio ou sem conf → Vision (se houver chave do tenant) |
 
 #### Opção A — upload multipart
 
@@ -280,6 +282,7 @@ X-Api-Key: sua-chave
 Content-Type: multipart/form-data
 
 file: <imagem PNG/JPEG/WebP/TIFF>
+tenantId: tenant-a
 engine: auto   # opcional
 ```
 
@@ -290,7 +293,7 @@ POST /ocr
 X-Api-Key: sua-chave
 Content-Type: application/json
 
-{ "imageUrl": "https://cdn.exemplo.com/receita.jpg", "engine": "auto" }
+{ "imageUrl": "https://cdn.exemplo.com/receita.jpg", "tenantId": "tenant-a", "engine": "auto" }
 ```
 
 #### Resposta de sucesso
@@ -322,26 +325,26 @@ Content-Type: application/json
 ```
 
 `confidence` com `engine=openai` é uma **estimativa** (autoavaliação do modelo + penalidade por trechos `[ilegível]`), não a métrica estatística do Tesseract.  
-`structured` / `structuredBy` vêm preenchidos quando há `OPENAI_API_KEY` e estruturação habilitada (`OCR_STRUCTURE_ENABLED=true`, default). Use `?structure=false` para desligar na requisição.
+`structured` / `structuredBy` vêm preenchidos quando há chave OpenAI do `tenantId` e estruturação habilitada (`OCR_STRUCTURE_ENABLED=true`, default). Use `?structure=false` para desligar na requisição.
 
 #### Erros
 
 | HTTP | Situação |
 |------|----------|
 | `401` | API key inválida ou ausente |
-| `400` | Sem imagem / Content-Type inválido / formato inválido |
-| `422` | OCR sem texto / imagem ilegível |
+| `400` | Sem `tenantId` / sem imagem / Content-Type inválido |
+| `422` | OCR sem texto / imagem ilegível / JSON inválido |
 | `502` | Falha ao baixar `imageUrl` ou chamar Vision/estruturação |
-| `503` | `engine=openai` / `structure=true` sem `OPENAI_API_KEY` |
+| `503` | `engine=openai` / `structure=true` sem chave OpenAI para o `tenantId` |
 
 ## Limitações
 
 - O campo `text` continua sendo o OCR bruto; `structured` é a organização via LLM.
 - Receitas **impressas**: Tesseract + preprocess costuma bastar.
-- Receitas **manuscritas**: use `OCR_ENGINE=auto` (ou `openai`) com `OPENAI_API_KEY`.
+- Receitas **manuscritas**: use `OCR_ENGINE=auto` (ou `openai`) com chave do tenant no mapa.
 - Com Vision, `confidence` é estimativa do modelo (0–100), ajustada se houver `[ilegível]`.
 - Melhor resultado com imagens nítidas; preprocess ajuda em scans tortos/ruidosos.
-- Não logamos conteúdo de receita/imagem; trate `OPENAI_API_KEY` e dados sensíveis com cuidado (LGPD).
+- Não logamos conteúdo de receita/imagem; trate chaves OpenAI e dados sensíveis com cuidado (LGPD).
 
 ## Testes
 

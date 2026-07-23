@@ -7,7 +7,7 @@ import pytest
 from PIL import Image, ImageDraw
 from fastapi.testclient import TestClient
 
-from app.config import get_settings
+from app.config import Settings, get_settings
 from app.main import app
 from app.ocr_service import OcrResult
 from app.preprocess import preprocess_image
@@ -43,6 +43,22 @@ def _make_png_bytes(text: str = "Dipirona 500mg") -> bytes:
     return buffer.getvalue()
 
 
+def test_get_openai_api_key_for_tenant_from_map() -> None:
+    settings = Settings(
+        openai_api_keys_by_tenant='{"tenant-a":"sk-a","tenant-b":"sk-b"}',
+    )
+    assert settings.get_openai_api_key_for_tenant("tenant-a") == "sk-a"
+    assert settings.get_openai_api_key_for_tenant("tenant-b") == "sk-b"
+    assert settings.get_openai_api_key_for_tenant("unknown") is None
+    assert settings.has_any_openai_key() is True
+
+
+def test_get_openai_api_key_missing_returns_none() -> None:
+    settings = Settings(openai_api_keys_by_tenant="{}")
+    assert settings.get_openai_api_key_for_tenant("tenant-a") is None
+    assert settings.has_any_openai_key() is False
+
+
 def test_health(client: TestClient) -> None:
     with patch("app.main.tesseract_version", return_value="5.3.0"):
         response = client.get("/health")
@@ -51,6 +67,21 @@ def test_health(client: TestClient) -> None:
     assert body["status"] == "ok"
     assert body["tesseract"] == "5.3.0"
     assert body["openai_configured"] is False
+
+
+def test_health_openai_configured_from_tenant_map(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv(
+        "OPENAI_API_KEYS_BY_TENANT",
+        '{"tenant-a":"sk-test"}',
+    )
+    get_settings.cache_clear()
+    with patch("app.main.tesseract_version", return_value="5.3.0"):
+        response = client.get("/health")
+    assert response.status_code == 200
+    assert response.json()["openai_configured"] is True
 
 
 def test_preprocess_returns_binary_image() -> None:
@@ -66,9 +97,30 @@ def test_preprocess_returns_binary_image() -> None:
 def test_ocr_unauthorized(client: TestClient) -> None:
     response = client.post(
         "/ocr",
+        data={"tenantId": "tenant-a"},
         files={"file": ("rx.png", _make_png_bytes(), "image/png")},
     )
     assert response.status_code == 401
+
+
+def test_ocr_missing_tenant_id_json(client: TestClient, api_key: str) -> None:
+    response = client.post(
+        "/ocr",
+        headers={"X-Api-Key": api_key, "Content-Type": "application/json"},
+        json={"imageUrl": "https://cdn.example.com/receita.png"},
+    )
+    assert response.status_code == 400
+    assert "tenantId" in str(response.json()["detail"])
+
+
+def test_ocr_missing_tenant_id_multipart(client: TestClient, api_key: str) -> None:
+    response = client.post(
+        "/ocr",
+        headers={"X-Api-Key": api_key},
+        files={"file": ("rx.png", _make_png_bytes(), "image/png")},
+    )
+    assert response.status_code == 400
+    assert "tenantId" in str(response.json()["detail"])
 
 
 def test_ocr_missing_body(client: TestClient, api_key: str) -> None:
@@ -77,7 +129,7 @@ def test_ocr_missing_body(client: TestClient, api_key: str) -> None:
         headers={"X-Api-Key": api_key, "Content-Type": "application/json"},
         content=b"{}",
     )
-    assert response.status_code == 422
+    assert response.status_code in {400, 422}
 
 
 def test_ocr_multipart_success(client: TestClient, api_key: str) -> None:
@@ -93,6 +145,7 @@ def test_ocr_multipart_success(client: TestClient, api_key: str) -> None:
         response = client.post(
             "/ocr",
             headers={"X-Api-Key": api_key},
+            data={"tenantId": "tenant-a"},
             files={"file": ("rx.png", _make_png_bytes(), "image/png")},
         )
 
@@ -121,7 +174,10 @@ def test_ocr_json_url_success(client: TestClient, api_key: str) -> None:
         response = client.post(
             "/ocr",
             headers={"X-Api-Key": api_key},
-            json={"imageUrl": "https://cdn.example.com/receita.png"},
+            json={
+                "imageUrl": "https://cdn.example.com/receita.png",
+                "tenantId": "tenant-a",
+            },
         )
 
     assert response.status_code == 200
@@ -144,6 +200,7 @@ def test_ocr_empty_text_returns_422(client: TestClient, api_key: str) -> None:
         response = client.post(
             "/ocr",
             headers={"X-Api-Key": api_key},
+            data={"tenantId": "tenant-a"},
             files={"file": ("rx.png", _make_png_bytes(), "image/png")},
         )
 
@@ -157,7 +214,10 @@ def test_ocr_auto_falls_back_to_vision_on_low_confidence(
 ) -> None:
     monkeypatch.setenv("OCR_ENGINE", "auto")
     monkeypatch.setenv("OCR_CONFIDENCE_THRESHOLD", "60")
-    monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+    monkeypatch.setenv(
+        "OPENAI_API_KEYS_BY_TENANT",
+        '{"tenant-a":"sk-from-map"}',
+    )
     monkeypatch.setenv("OCR_STRUCTURE_ENABLED", "false")
     get_settings.cache_clear()
 
@@ -168,19 +228,18 @@ def test_ocr_auto_falls_back_to_vision_on_low_confidence(
         confidence=82.0,
         engine="openai",
     )
+    vision_mock = AsyncMock(return_value=vision_result)
 
     with (
         patch("app.ocr_service.configure_tesseract"),
         patch("app.ocr_service.pytesseract.image_to_string", return_value="xx yy"),
         patch("app.ocr_service.pytesseract.image_to_data", return_value=fake_data),
-        patch(
-            "app.vision_service.extract_text_with_vision",
-            new=AsyncMock(return_value=vision_result),
-        ),
+        patch("app.vision_service.extract_text_with_vision", new=vision_mock),
     ):
         response = client.post(
             "/ocr",
             headers={"X-Api-Key": api_key},
+            data={"tenantId": "tenant-a"},
             files={"file": ("rx.png", _make_png_bytes(), "image/png")},
         )
 
@@ -189,6 +248,8 @@ def test_ocr_auto_falls_back_to_vision_on_low_confidence(
     assert body["engine"] == "openai"
     assert "manuscrito" in body["text"]
     assert body["confidence"] == 82.0
+    used_settings = vision_mock.await_args.args[1]
+    assert used_settings.openai_api_key == "sk-from-map"
 
 
 def test_ocr_openai_engine_uses_vision(
@@ -196,7 +257,10 @@ def test_ocr_openai_engine_uses_vision(
     api_key: str,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+    monkeypatch.setenv(
+        "OPENAI_API_KEYS_BY_TENANT",
+        '{"tenant-a":"sk-from-map"}',
+    )
     monkeypatch.setenv("OCR_STRUCTURE_ENABLED", "false")
     get_settings.cache_clear()
 
@@ -214,6 +278,7 @@ def test_ocr_openai_engine_uses_vision(
         response = client.post(
             "/ocr?engine=openai",
             headers={"X-Api-Key": api_key},
+            data={"tenantId": "tenant-a"},
             files={"file": ("rx.png", _make_png_bytes(), "image/png")},
         )
 
@@ -224,6 +289,24 @@ def test_ocr_openai_engine_uses_vision(
     assert body["confidence"] == 76.5
 
 
+def test_ocr_openai_engine_without_key_returns_503(
+    client: TestClient,
+    api_key: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("OPENAI_API_KEYS_BY_TENANT", raising=False)
+    monkeypatch.setenv("OCR_STRUCTURE_ENABLED", "false")
+    get_settings.cache_clear()
+
+    response = client.post(
+        "/ocr?engine=openai",
+        headers={"X-Api-Key": api_key},
+        data={"tenantId": "unknown-tenant"},
+        files={"file": ("rx.png", _make_png_bytes(), "image/png")},
+    )
+    assert response.status_code == 503
+
+
 def test_ocr_structures_prescription_when_openai_configured(
     client: TestClient,
     api_key: str,
@@ -231,7 +314,10 @@ def test_ocr_structures_prescription_when_openai_configured(
 ) -> None:
     from app.schemas import StructuredPrescription
 
-    monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+    monkeypatch.setenv(
+        "OPENAI_API_KEYS_BY_TENANT",
+        '{"tenant-a":"sk-test"}',
+    )
     monkeypatch.setenv("OCR_STRUCTURE_ENABLED", "true")
     get_settings.cache_clear()
 
@@ -244,19 +330,18 @@ def test_ocr_structures_prescription_when_openai_configured(
         posology="1 comprimido a cada 6 horas",
         items=[],
     )
+    structure_mock = AsyncMock(return_value=structured)
 
     with (
         patch("app.ocr_service.configure_tesseract"),
         patch("app.ocr_service.pytesseract.image_to_string", return_value="Dipirona 500mg"),
         patch("app.ocr_service.pytesseract.image_to_data", return_value=fake_data),
-        patch(
-            "app.main.structure_prescription_text",
-            new=AsyncMock(return_value=structured),
-        ),
+        patch("app.main.structure_prescription_text", new=structure_mock),
     ):
         response = client.post(
             "/ocr",
             headers={"X-Api-Key": api_key},
+            data={"tenantId": "tenant-a"},
             files={"file": ("rx.png", _make_png_bytes(), "image/png")},
         )
 
@@ -268,6 +353,7 @@ def test_ocr_structures_prescription_when_openai_configured(
     assert body["structured"]["patient"] == "Maria Silva"
     assert "Dipirona" in body["structured"]["inscription"]
     assert "6 horas" in body["structured"]["posology"]
+    assert structure_mock.await_args.args[1].openai_api_key == "sk-test"
 
 
 def test_parse_structured_payload_accepts_portuguese_keys() -> None:

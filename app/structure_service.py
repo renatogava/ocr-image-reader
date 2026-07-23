@@ -109,7 +109,7 @@ async def structure_prescription_text(
 ) -> StructuredPrescription:
     if not settings.openai_api_key:
         raise OcrError(
-            "OPENAI_API_KEY não configurada para estruturação da receita",
+            "Nenhuma chave OpenAI configurada para estruturação da receita (tenantId)",
             status_code=503,
         )
 

@@ -5,6 +5,7 @@ from pydantic import BaseModel, Field, HttpUrl
 
 class OcrUrlRequest(BaseModel):
     image_url: HttpUrl = Field(..., alias="imageUrl")
+    tenant_id: str = Field(..., alias="tenantId", min_length=1)
     engine: Literal["auto", "tesseract", "openai"] | None = None
     structure: bool | None = None
 
